@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Satellite Damage Viewer</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css"/>
+<style>
+:root{
+  --bg:#0b0d0f;--s1:#13161a;--s2:#1c2026;--s3:#252a32;
+  --border:#2a2f38;--text:#e2e5ea;--muted:#6b7280;--hint:#3d4451;
+  --accent:#f59e0b;--red:#ef4444;--blue:#3b82f6;--green:#22c55e;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
+  font-family:system-ui,-apple-system,sans-serif;font-size:14px}
+
+/* ── Top-level layout ───────────────────────────────────────────────────── */
+/* Simple: topbar full width, below it sidebar + maparea side by side       */
+.topbar{height:46px;background:var(--s1);border-bottom:1px solid var(--border);
+  display:flex;align-items:center;gap:10px;padding:0 14px}
+.body{display:flex;height:calc(100vh - 46px)}
+.sidebar{width:300px;flex-shrink:0;background:var(--s1);
+  border-right:1px solid var(--border);overflow-y:auto;padding:12px;
+  display:flex;flex-direction:column;gap:11px}
+
+/* ── Map area ────────────────────────────────────────────────────────────── */
+/* Simple: fills remaining width, position:relative so children can fill it  */
+.maparea{flex:1;position:relative;background:#000;overflow:hidden}
+
+/* All view panels absolutely fill the maparea */
+.panel{position:absolute;top:0;left:0;right:0;bottom:0;display:none}
+.panel.active{display:block}
+
+/* Side-by-side: two equal columns */
+#panel-side{display:none}
+#panel-side.active{
+  display:grid;
+  grid-template-columns:1fr 3px 1fr;
+  grid-template-rows:1fr;   /* force single row */
+}
+.map-half{position:relative;overflow:hidden;min-width:0}
+/* Leaflet container fills the half */
+.map-half > .leaflet-container{position:absolute!important;top:0;left:0;right:0;bottom:0}
+.divider{background:var(--border)}
+
+/* ── Slider canvas panel ─────────────────────────────────────────────────── */
+#panel-slider canvas{position:absolute;top:0;left:0;width:100%;height:100%}
+#sbar{position:absolute;top:0;bottom:0;width:2px;background:#fff;left:50%;
+  pointer-events:none;z-index:10;box-shadow:0 0 8px rgba(0,0,0,.5)}
+#sknob{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:36px;height:36px;background:#fff;border-radius:50%;
+  border:2.5px solid var(--accent);cursor:ew-resize;z-index:11;
+  display:flex;align-items:center;justify-content:center;
+  box-shadow:0 2px 10px rgba(0,0,0,.5)}
+.cmp-lbl{position:absolute;bottom:12px;z-index:12;pointer-events:none;
+  font-size:11px;font-weight:600;padding:4px 12px;border-radius:20px}
+#cmp-lbl-b{left:12px;background:rgba(0,0,0,.78);color:#fff}
+#cmp-lbl-a{right:12px;background:rgba(245,158,11,.9);color:#000}
+
+/* ── Overlay panel ────────────────────────────────────────────────────────  */
+/* #mo fills the panel, damage imageOverlay is drawn on top by Leaflet       */
+#panel-overlay > .leaflet-container{position:absolute!important;
+  top:0;left:0;right:0;bottom:0}
+
+/* ── Map badges ─────────────────────────────────────────────────────────── */
+.mbadge{position:absolute;bottom:10px;left:50%;transform:translateX(-50%);
+  background:rgba(0,0,0,.78);color:#fff;font-size:11px;font-weight:600;
+  padding:4px 12px;border-radius:20px;z-index:1000;pointer-events:none;
+  white-space:nowrap}
+.mbadge.after{background:rgba(245,158,11,.9);color:#000}
+.mbadge.ovr{background:rgba(239,68,68,.88)}
+
+/* ── Empty state ─────────────────────────────────────────────────────────── */
+#empty{z-index:5;display:flex;flex-direction:column;align-items:center;
+  justify-content:center;gap:12px}
+#empty p{color:var(--muted);font-size:14px;text-align:center}
+#empty p.sub{font-size:12px;color:var(--hint)}
+
+/* ── Sidebar styles ──────────────────────────────────────────────────────── */
+.logo{font-size:15px;font-weight:600;display:flex;align-items:center;gap:8px}
+.badge{font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px}
+.hd{background:var(--accent);color:#000}
+.live{background:#ef4444;color:#fff;animation:blink 2s infinite}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:.5}}
+.tsub{color:var(--muted);font-size:12px}
+.f1{flex:1}
+.lbl{font-size:10px;font-weight:700;letter-spacing:.1em;color:var(--muted);
+  text-transform:uppercase;margin-bottom:6px}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label,.fl{font-size:12px;color:var(--muted)}
+select,input[type=number],input[type=date]{background:var(--s2);
+  border:1px solid var(--border);color:var(--text);padding:7px 10px;
+  border-radius:6px;font-size:13px;width:100%;outline:none}
+select:focus,input:focus{border-color:var(--accent)}
+option,optgroup{background:#1c2026}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.sep{border-top:1px solid var(--border)}
+.btn{width:100%;padding:9px;border-radius:8px;border:none;cursor:pointer;
+  font-size:13px;font-weight:600;transition:opacity .15s,transform .1s}
+.btn:hover:not(:disabled){opacity:.85;transform:translateY(-1px)}
+.btn:disabled{opacity:.35;cursor:not-allowed}
+.btn-p{background:var(--accent);color:#000}
+.btn-g{background:var(--s2);color:var(--text);border:1px solid var(--border);margin-top:4px}
+.prog{height:3px;background:var(--border);border-radius:2px;overflow:hidden;margin-top:6px}
+.prog-f{height:100%;background:var(--accent);border-radius:2px;transition:width .3s;width:0}
+.status{font-size:11px;color:var(--muted);margin-top:4px;line-height:1.4;min-height:14px}
+.tabs{display:grid;grid-template-columns:1fr 1fr 1fr;gap:3px;
+  background:var(--s2);padding:3px;border-radius:8px}
+.tab{padding:6px;border-radius:5px;border:none;background:transparent;
+  color:var(--muted);font-size:12px;font-weight:500;cursor:pointer;transition:all .15s}
+.tab.on{background:var(--accent);color:#000;font-weight:700}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.stat{background:var(--s2);border:1px solid var(--border);border-radius:8px;padding:8px 10px}
+.stat-v{font-size:18px;font-weight:700;line-height:1}
+.stat-l{font-size:10px;color:var(--muted);margin-top:3px}
+.stat.f .stat-v{color:var(--red)}.stat.d .stat-v{color:var(--blue)}
+.stat.c .stat-v{color:var(--accent)}.stat.r .stat-v{color:var(--green)}
+.leg{display:flex;flex-direction:column;gap:5px}
+.leg-row{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.ld{width:13px;height:13px;border-radius:3px;flex-shrink:0}
+.opa-row{display:flex;align-items:center;gap:8px}
+.opa-row label{font-size:12px;color:var(--muted);white-space:nowrap;min-width:76px}
+input[type=range]{flex:1;accent-color:var(--accent)}
+.opa-v{font-size:12px;color:var(--muted);min-width:38px;text-align:right}
+.notice{background:var(--s3);border:1px solid var(--hint);border-radius:6px;
+  padding:8px 10px;font-size:11px;color:var(--muted);line-height:1.5}
+.notice strong{color:var(--text)}
+.warn{border-color:#854d0e!important;background:#1c1507!important;color:#fbbf24!important}
+.warn strong{color:#fbbf24!important}
+::-webkit-scrollbar{width:5px}
+::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+.leaflet-container{background:#0b0d0f!important}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2">
+      <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
+    </svg>
+    Satellite Damage Viewer
+  </div>
+  <span class="badge hd">HD</span>
+  <span class="badge live">LIVE</span>
+  <span class="tsub">ESRI Wayback Archive · Real historical tiles · Buildings visible</span>
+  <div class="f1"></div>
+  <span style="font-size:11px;color:var(--hint)">scroll=zoom · drag=pan</span>
+</div>
+
+<div class="body">
+<div class="sidebar">
+
+  <div>
+    <div class="lbl">Location</div>
+    <div class="field" style="margin-bottom:8px">
+      <select id="preset" onchange="applyPreset()">
+        <option value="">— select preset —</option>
+        <optgroup label="🇮🇷 Iran">
+          <option value="tehran">Tehran — Capital</option>
+          <option value="isfahan">Isfahan — Nuclear area</option>
+          <option value="kharg">Kharg Island — Oil terminal</option>
+          <option value="bandar_abbas">Bandar Abbas — Naval base</option>
+          <option value="natanz">Natanz — Enrichment site</option>
+          <option value="fordow">Fordow — Underground nuclear</option>
+          <option value="tabriz">Tabriz</option>
+          <option value="ahvaz">Ahvaz — Oil refinery</option>
+        </optgroup>
+        <optgroup label="🇦🇪 UAE">
+          <option value="dubai">Dubai city centre</option>
+          <option value="dubai_airport">Dubai Int'l Airport</option>
+          <option value="abu_dhabi">Abu Dhabi</option>
+          <option value="ruwais">Ruwais — Petrochemical</option>
+        </optgroup>
+        <optgroup label="🇸🇦 Saudi Arabia">
+          <option value="riyadh">Riyadh</option>
+          <option value="jeddah">Jeddah</option>
+          <option value="abqaiq">Abqaiq — Oil processing</option>
+          <option value="ras_tanura">Ras Tanura — Oil terminal</option>
+          <option value="neom">NEOM / The Line</option>
+        </optgroup>
+        <optgroup label="🇶🇦 Qatar">
+          <option value="doha">Doha</option>
+          <option value="ras_laffan">Ras Laffan — LNG</option>
+        </optgroup>
+        <optgroup label="🇴🇲 Oman">
+          <option value="salalah">Salalah Port</option>
+          <option value="hormuz">Strait of Hormuz</option>
+        </optgroup>
+        <optgroup label="🇮🇱 Israel / 🇾🇪 Yemen">
+          <option value="tel_aviv">Tel Aviv</option>
+          <option value="haifa">Haifa</option>
+          <option value="hodeidah">Hodeidah Port</option>
+          <option value="sanaa">Sanaa</option>
+        </optgroup>
+      </select>
+    </div>
+    <div class="row2">
+      <div class="field"><label>Latitude</label><input type="number" id="lat" value="35.720" step="0.001"></div>
+      <div class="field"><label>Longitude</label><input type="number" id="lon" value="51.420" step="0.001"></div>
+    </div>
+    <div class="field" style="margin-top:6px">
+      <label>Zoom — <span id="zlbl" style="color:var(--accent)">Street (14)</span></label>
+      <input type="range" id="zoom-r" min="10" max="18" value="14" oninput="updateZlbl(this.value)">
+    </div>
+  </div>
+
+  <div class="sep"></div>
+
+  <div>
+    <div class="lbl">Imagery Dates (Wayback)</div>
+    <div id="cat-notice" class="notice" style="margin-bottom:8px">
+      <strong>Loading…</strong> fetching releases from ESRI.
+    </div>
+    <button class="btn btn-g" style="font-size:11px;padding:6px;margin-bottom:8px" onclick="reloadCat()">↻ Refresh release list</button>
+    <div class="field" style="margin-bottom:8px">
+      <label>BEFORE</label>
+      <select id="sel-b" disabled onchange="checkSame()"><option>Loading…</option></select>
+    </div>
+    <div class="field">
+      <label>AFTER — <span id="latest-lbl" style="color:var(--accent)">latest available</span></label>
+      <select id="sel-a" disabled onchange="checkSame()"><option>Loading…</option></select>
+      <span style="font-size:11px;color:var(--hint);margin-top:3px;line-height:1.4">
+        Wayback publishes new snapshots every 2–4 weeks. Latest entry = last ESRI basemap update, not today.
+      </span>
+    </div>
+    <div id="same-warn" class="notice warn" style="display:none;margin-top:6px">
+      <strong>⚠ Same date</strong> — tiles identical, detection will find nothing.
+    </div>
+  </div>
+
+  <div class="sep"></div>
+
+  <div>
+    <div class="lbl">Image Enhancement</div>
+    <div class="opa-row"><label>Brightness</label>
+      <input type="range" id="brightness" min="80" max="250" value="120" oninput="updateFilter()">
+      <span class="opa-v" id="bv">120%</span></div>
+    <div class="opa-row" style="margin-top:6px"><label>Contrast</label>
+      <input type="range" id="contrast" min="80" max="250" value="115" oninput="updateFilter()">
+      <span class="opa-v" id="cv2">115%</span></div>
+    <div class="opa-row" style="margin-top:6px"><label>Saturation</label>
+      <input type="range" id="saturation" min="0" max="300" value="130" oninput="updateFilter()">
+      <span class="opa-v" id="satv">130%</span></div>
+    <button class="btn btn-g" style="margin-top:8px;font-size:12px" onclick="resetFilters()">Reset to defaults</button>
+  </div>
+
+  <div class="sep"></div>
+
+  <div>
+    <div class="lbl">NASA Fire Layer (optional)</div>
+    <div class="field" style="margin-bottom:6px">
+      <select id="nasa-lyr" onchange="toggleNasaDate()">
+        <option value="none">None — use Wayback only</option>
+        <option value="viirs_fire">VIIRS Thermal Anomalies — Fires (375m)</option>
+        <option value="modis_true">MODIS Terra True Color (250m)</option>
+        <option value="viirs_true">VIIRS NOAA-20 True Color (375m)</option>
+      </select>
+    </div>
+    <div id="nasa-date-row" style="display:none" class="field">
+      <label>NASA date</label>
+      <input type="date" id="nasa-date" value="2026-03-10">
+    </div>
+  </div>
+
+  <button class="btn btn-p" id="load-btn" onclick="loadMaps()" disabled>↓ Load Maps</button>
+  <button class="btn btn-g" id="det-btn"  onclick="runDetection()" disabled>⚡ Run Damage Detection</button>
+  <button class="btn btn-g" id="exp-btn"  onclick="exportImg()" disabled>↑ Export PNG</button>
+
+  <div>
+    <div class="prog"><div class="prog-f" id="prog"></div></div>
+    <div class="status" id="status">Loading Wayback catalogue…</div>
+  </div>
+
+  <div class="sep"></div>
+
+  <div>
+    <div class="lbl">View Mode</div>
+    <div class="tabs">
+      <button class="tab on" id="tab-slider"  onclick="setMode('slider')">Slider</button>
+      <button class="tab"    id="tab-side"    onclick="setMode('side')">Side by side</button>
+      <button class="tab"    id="tab-overlay" onclick="setMode('overlay')">Overlay</button>
+    </div>
+    <div style="font-size:11px;color:var(--hint);margin-top:5px;line-height:1.4">
+      <strong style="color:var(--muted)">Overlay</strong> shows damage zones — run detection first.
+    </div>
+  </div>
+
+  <div>
+    <div class="opa-row"><label>Overlay opacity</label>
+      <input type="range" id="opa" min="0" max="100" value="70" oninput="setOpa(this.value)">
+      <span class="opa-v" id="opa-v">70%</span></div>
+    <div class="opa-row" style="margin-top:6px"><label>Sensitivity</label>
+      <input type="range" id="sens" min="5" max="80" value="18"
+        oninput="document.getElementById('sv').textContent=this.value">
+      <span class="opa-v" id="sv">18</span></div>
+  </div>
+
+  <div class="sep"></div>
+
+  <div>
+    <div class="lbl">Damage Statistics</div>
+    <div class="stats">
+      <div class="stat f"><div class="stat-v" id="sf">—</div><div class="stat-l">Fire / burn</div></div>
+      <div class="stat d"><div class="stat-v" id="sd">—</div><div class="stat-l">Collapse/flood</div></div>
+      <div class="stat c"><div class="stat-v" id="sc">—</div><div class="stat-l">Total change</div></div>
+      <div class="stat r"><div class="stat-v" id="sr">—</div><div class="stat-l">Zones flagged</div></div>
+    </div>
+  </div>
+
+  <div>
+    <div class="lbl">Legend</div>
+    <div class="leg">
+      <div class="leg-row"><div class="ld" style="background:#ef444499;border:2px solid #ef4444"></div>Fire / burn scar</div>
+      <div class="leg-row"><div class="ld" style="background:#3b82f699;border:2px solid #3b82f6"></div>Collapse / darkening / flood</div>
+      <div class="leg-row"><div class="ld" style="background:#f59e0b99;border:2px solid #f59e0b"></div>General change</div>
+      <div class="leg-row"><div class="ld" style="background:transparent;border:2px solid #22c55e"></div>Flagged zone (largest = #1)</div>
+    </div>
+  </div>
+
+</div><!-- sidebar -->
+
+<!-- ── Map area ─────────────────────────────────────────────────────────── -->
+<div class="maparea" id="maparea">
+
+  <!-- Empty state -->
+  <div class="panel active" id="empty">
+    <svg width="52" height="52" viewBox="0 0 24 24" fill="none" stroke="#2a2f38" stroke-width="1.2">
+      <circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
+    </svg>
+    <p>Select a location and click <strong>Load Maps</strong></p>
+    <p class="sub">Buildings &amp; streets visible at zoom ≥ 13</p>
+  </div>
+
+  <!-- Side-by-side panel -->
+  <div class="panel" id="panel-side">
+    <div class="map-half">
+      <div id="mb"></div>
+      <div class="mbadge" id="lb-b">BEFORE</div>
+    </div>
+    <div class="divider"></div>
+    <div class="map-half">
+      <div id="ma"></div>
+      <div class="mbadge after" id="lb-a">AFTER</div>
+    </div>
+  </div>
+
+  <!-- Slider panel (canvas-based, no separate Leaflet map) -->
+  <div class="panel" id="panel-slider">
+    <canvas id="cmp-cv"></canvas>
+    <div id="sbar"></div>
+    <div id="sknob">
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#000" stroke-width="2">
+        <path d="M5 4l-3 4 3 4M11 4l3 4-3 4"/>
+      </svg>
+    </div>
+    <div class="cmp-lbl" id="cmp-lbl-b">BEFORE</div>
+    <div class="cmp-lbl" id="cmp-lbl-a">AFTER</div>
+  </div>
+
+  <!-- Overlay / detection panel -->
+  <div class="panel" id="panel-overlay">
+    <div id="mo"></div>
+    <div class="mbadge ovr" style="top:10px;bottom:auto">CHANGE DETECTION</div>
+  </div>
+
+</div><!-- maparea -->
+</div><!-- body -->
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script>
+// ── Presets ──────────────────────────────────────────────────────────────────
+const PRESETS={
+  tehran:{lat:35.720,lon:51.420,z:13},isfahan:{lat:32.661,lon:51.680,z:13},
+  kharg:{lat:29.250,lon:50.325,z:14},bandar_abbas:{lat:27.183,lon:56.279,z:13},
+  natanz:{lat:33.725,lon:51.727,z:14},fordow:{lat:34.887,lon:50.993,z:14},
+  tabriz:{lat:38.080,lon:46.299,z:13},ahvaz:{lat:31.320,lon:48.670,z:13},
+  dubai:{lat:25.204,lon:55.270,z:13},dubai_airport:{lat:25.252,lon:55.364,z:15},
+  abu_dhabi:{lat:24.453,lon:54.377,z:13},ruwais:{lat:24.115,lon:52.730,z:13},
+  riyadh:{lat:24.688,lon:46.722,z:12},jeddah:{lat:21.543,lon:39.173,z:13},
+  abqaiq:{lat:25.938,lon:49.668,z:14},ras_tanura:{lat:26.641,lon:50.163,z:14},
+  neom:{lat:27.600,lon:35.600,z:11},
+  doha:{lat:25.286,lon:51.533,z:13},ras_laffan:{lat:25.909,lon:51.558,z:13},
+  salalah:{lat:16.941,lon:54.007,z:14},hormuz:{lat:26.600,lon:56.500,z:11},
+  tel_aviv:{lat:32.085,lon:34.781,z:13},haifa:{lat:32.820,lon:34.990,z:13},
+  hodeidah:{lat:14.798,lon:42.955,z:14},sanaa:{lat:15.355,lon:44.207,z:13},
+};
+const ZLBL={10:'Region',11:'City wide',12:'District',13:'Neighbourhood',
+  14:'Street',15:'Block',16:'Building',17:'Rooftop',18:'Ultra'};
+
+function applyPreset(){
+  const p=PRESETS[document.getElementById('preset').value];if(!p)return;
+  document.getElementById('lat').value=p.lat;
+  document.getElementById('lon').value=p.lon;
+  document.getElementById('zoom-r').value=p.z;
+  updateZlbl(p.z);
+}
+function updateZlbl(v){
+  document.getElementById('zlbl').textContent=(ZLBL[v]||v)+' ('+v+')';
+}
+function toggleNasaDate(){
+  const v=document.getElementById('nasa-lyr').value;
+  document.getElementById('nasa-date-row').style.display=v==='none'?'none':'block';
+}
+
+// ── NASA layers ──────────────────────────────────────────────────────────────
+const NASA={
+  viirs_fire:d=>`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_NOAA20_Thermal_Anomalies_375m_All/default/${d}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.png`,
+  modis_true:d=>`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/MODIS_Terra_CorrectedReflectance_TrueColor/default/${d}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`,
+  viirs_true:d=>`https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/VIIRS_NOAA20_CorrectedReflectance_TrueColor/default/${d}/GoogleMapsCompatible_Level9/{z}/{y}/{x}.jpg`,
+};
+
+// ── Wayback ──────────────────────────────────────────────────────────────────
+let catalogue=[];
+
+function makeWayback(releaseNum){
+  const base=`https://wayback.maptiles.arcgis.com/arcgis/rest/services/World_Imagery/WMTS/1.0.0/default028mm/MapServer/tile/${releaseNum}`;
+  const layer=L.tileLayer('',{maxZoom:19,tileSize:256,crossOrigin:'anonymous',
+    errorTileUrl:'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'});
+  layer.getTileUrl=function(c){return `${base}/${c.z}/${c.y}/${c.x}`;};
+  // Hide orange placeholder tiles
+  layer.on('tileload',function(e){
+    const img=e.tile;
+    try{
+      const cv=document.createElement('canvas');cv.width=8;cv.height=8;
+      const ctx=cv.getContext('2d');
+      ctx.drawImage(img,120,120,16,16,0,0,8,8);
+      const d=ctx.getImageData(0,0,8,8).data;
+      let r=0,g=0,b=0,n=0;
+      for(let i=0;i<d.length;i+=4){r+=d[i];g+=d[i+1];b+=d[i+2];n++;}
+      r/=n;g/=n;b/=n;
+      if(r>160&&g>80&&g<175&&b<80&&(r-b)>100)img.style.display='none';
+    }catch(x){}
+  });
+  return layer;
+}
+
+async function loadCat(){
+  const notice=document.getElementById('cat-notice');
+  try{
+    const resp=await fetch('https://s3-us-west-2.amazonaws.com/config.maptiles.arcgis.com/waybackconfig.json');
+    if(!resp.ok)throw new Error(resp.status);
+    const json=await resp.json();
+    catalogue=Object.entries(json)
+      .map(([k,v])=>({
+        releaseNum:parseInt(k),
+        label:v.releaseDateLabel||(v.itemTitle||'').match(/(\d{4}-\d{2}-\d{2})/)?.[1]||k,
+      }))
+      .filter(e=>Number.isFinite(e.releaseNum)&&/\d{4}-\d{2}-\d{2}/.test(e.label))
+      .sort((a,b)=>b.label.localeCompare(a.label));
+    notice.innerHTML=`<strong>Loaded</strong> — ${catalogue.length} releases · latest: ${catalogue[0].label}`;
+    notice.className='notice';
+  }catch(err){
+    catalogue=[
+      {releaseNum:59432,label:'2026-03-06'},{releaseNum:59201,label:'2026-02-13'},
+      {releaseNum:58919,label:'2026-01-16'},{releaseNum:58401,label:'2025-11-06'},
+      {releaseNum:57959,label:'2025-09-04'},{releaseNum:57434,label:'2025-06-26'},
+      {releaseNum:56929,label:'2025-04-17'},{releaseNum:56441,label:'2025-02-13'},
+      {releaseNum:55977,label:'2024-12-12'},{releaseNum:55488,label:'2024-10-10'},
+      {releaseNum:54987,label:'2024-08-08'},{releaseNum:54432,label:'2024-05-30'},
+      {releaseNum:53876,label:'2024-03-07'},{releaseNum:53321,label:'2023-12-07'},
+      {releaseNum:52750,label:'2023-09-28'},{releaseNum:52098,label:'2023-07-20'},
+    ];
+    notice.innerHTML=`<strong>Offline fallback</strong> — ${catalogue.length} releases. Serve via <code>python3 -m http.server 8080</code> for live catalogue.`;
+    notice.className='notice warn';
+  }
+  fillSelects();
+  document.getElementById('load-btn').disabled=false;
+  setStatus('Ready — select a location and click Load Maps');
+}
+
+async function reloadCat(){
+  document.getElementById('cat-notice').innerHTML='<strong>Refreshing…</strong>';
+  catalogue=[];
+  ['sel-b','sel-a'].forEach(id=>{
+    const el=document.getElementById(id);
+    el.innerHTML='<option>Loading…</option>';
+    el.disabled=true;
+  });
+  document.getElementById('load-btn').disabled=true;
+  await loadCat();
+}
+
+function fillSelects(){
+  const sb=document.getElementById('sel-b'), sa=document.getElementById('sel-a');
+  sb.innerHTML=''; sa.innerHTML='';
+  catalogue.forEach((e,i)=>{
+    sb.appendChild(new Option(e.label, e.releaseNum, i===4, i===4));
+    sa.appendChild(new Option(i===0?e.label+' ★ latest':e.label, e.releaseNum, i===0, i===0));
+  });
+  sb.disabled=false; sa.disabled=false;
+  const ll=document.getElementById('latest-lbl');
+  if(ll&&catalogue.length) ll.textContent='latest: '+catalogue[0].label;
+}
+function checkSame(){
+  const same=document.getElementById('sel-b').value===document.getElementById('sel-a').value;
+  document.getElementById('same-warn').style.display=same?'block':'none';
+}
+
+// ── Image filter ──────────────────────────────────────────────────────────────
+function filterStr(){
+  return `brightness(${document.getElementById('brightness').value}%) `+
+         `contrast(${document.getElementById('contrast').value}%) `+
+         `saturate(${document.getElementById('saturation').value}%)`;
+}
+function updateFilter(){
+  document.getElementById('bv').textContent=document.getElementById('brightness').value+'%';
+  document.getElementById('cv2').textContent=document.getElementById('contrast').value+'%';
+  document.getElementById('satv').textContent=document.getElementById('saturation').value+'%';
+  applyFilter();
+}
+function applyFilter(){
+  document.querySelectorAll('.leaflet-tile-pane').forEach(el=>el.style.filter=filterStr());
+}
+function resetFilters(){
+  document.getElementById('brightness').value=120;
+  document.getElementById('contrast').value=115;
+  document.getElementById('saturation').value=130;
+  updateFilter();
+}
+
+// ── App state ─────────────────────────────────────────────────────────────────
+// IMPORTANT: only TWO Leaflet maps — mapB (before, in side panel left)
+//            and mapA (after, in side panel right AND overlay panel)
+// The slider is a canvas screenshot — no third map needed.
+let mapB=null, mapA=null;          // the only two Leaflet maps
+let mode='slider';
+let syncing=false;
+let capB=null, capA=null, capOv=null;
+let sliderPos=0.5, sliderDrag=false;
+let ovLayer=null, detectionDone=false;
+
+const $=id=>document.getElementById(id);
+const setProg=p=>$('prog').style.width=Math.min(100,p)+'%';
+const setStatus=t=>$('status').textContent=t;
+
+// ── Load maps ─────────────────────────────────────────────────────────────────
+async function loadMaps(){
+  const lat=parseFloat($('lat').value), lon=parseFloat($('lon').value);
+  const z=parseInt($('zoom-r').value);
+  const relB=parseInt($('sel-b').value), relA=parseInt($('sel-a').value);
+  const nasaSrc=$('nasa-lyr').value, nasaDate=$('nasa-date').value;
+
+  if(!relB||!relA){setStatus('Select both dates first.');return;}
+
+  const lblB=catalogue.find(e=>e.releaseNum===relB)?.label||String(relB);
+  const lblA=catalogue.find(e=>e.releaseNum===relA)?.label||String(relA);
+
+  $('load-btn').disabled=true;
+  setProg(10); setStatus('Loading maps…');
+
+  // Destroy old maps
+  if(mapB){try{mapB.remove();}catch(e){}} mapB=null;
+  if(mapA){try{mapA.remove();}catch(e){}} mapA=null;
+  detectionDone=false; capOv=null; ovLayer=null;
+  capB=null; capA=null;
+
+  // Always start in side-by-side so both Leaflet containers are visible and sized
+  // Show panel-side, hide everything else
+  showPanel('panel-side');
+
+  // Small pause so browser paints the grid before Leaflet measures containers
+  await new Promise(r=>setTimeout(r,80));
+
+  const center=[lat,lon];
+  const opts={center,zoom:z,zoomControl:false,attributionControl:false,preferCanvas:true};
+
+  mapB=L.map('mb',opts);
+  mapA=L.map('ma',opts);
+
+  makeWayback(relB).addTo(mapB);
+  makeWayback(relA).addTo(mapA);
+
+  if(nasaSrc!=='none'&&NASA[nasaSrc]){
+    const url=NASA[nasaSrc](nasaDate);
+    L.tileLayer(url,{maxZoom:9,opacity:0.65,crossOrigin:'anonymous'}).addTo(mapB);
+    L.tileLayer(url,{maxZoom:9,opacity:0.65,crossOrigin:'anonymous'}).addTo(mapA);
+  }
+
+  // Sync both maps on pan/zoom
+  const sync=(src,tgt)=>src.on('move',()=>{
+    if(syncing)return; syncing=true;
+    tgt.setView(src.getCenter(),src.getZoom(),{animate:false});
+    syncing=false;
+  });
+  sync(mapB,mapA); sync(mapA,mapB);
+
+  // Apply filter on tile load
+  [mapB,mapA].forEach(m=>m.on('tileload',applyFilter));
+
+  // Update labels
+  $('lb-b').textContent=lblB; $('lb-a').textContent=lblA;
+  $('cmp-lbl-b').textContent=lblB; $('cmp-lbl-a').textContent=lblA;
+
+  setProg(60); setStatus(`Streaming tiles…`);
+  await new Promise(r=>setTimeout(r,700));
+
+  [mapB,mapA].forEach(m=>m.invalidateSize());
+  applyFilter();
+  setProg(100);
+
+  // Now switch to the mode the user had selected
+  setMode(mode);
+
+  setStatus(relB===relA
+    ? '⚠ Same date — detection will find nothing'
+    : `Ready: ${lblB} → ${lblA} · Click Run Damage Detection`);
+
+  $('load-btn').disabled=false;
+  $('det-btn').disabled=false;
+  $('exp-btn').disabled=false;
+}
+
+// ── Panel / mode switching ────────────────────────────────────────────────────
+function showPanel(id){
+  ['empty','panel-side','panel-slider','panel-overlay'].forEach(pid=>{
+    const el=$(pid);
+    el.classList.toggle('active', pid===id);
+  });
+}
+
+function setMode(m){
+  mode=m;
+  ['slider','side','overlay'].forEach(id=>{
+    $('tab-'+id).classList.toggle('on',id===m);
+  });
+
+  if(!mapB||!mapA) return; // not loaded yet
+
+  if(m==='side'){
+    showPanel('panel-side');
+    mapB.invalidateSize();
+    mapA.invalidateSize();
+  } else if(m==='slider'){
+    showPanel('panel-slider');
+    captureSlider();
+  } else if(m==='overlay'){
+    if(!detectionDone){setStatus('Run damage detection first to see overlay.');return;}
+    showPanel('panel-overlay');
+    // Move mapA into the overlay panel and refresh
+    const moDiv=$('mo');
+    moDiv.innerHTML='';
+    mapA.getContainer().style.cssText='';
+    moDiv.appendChild(mapA.getContainer());
+    mapA.invalidateSize();
+    if(ovLayer) ovLayer.addTo(mapA);
+  }
+}
+
+// ── Slider (canvas) ───────────────────────────────────────────────────────────
+async function captureSlider(){
+  setStatus('Rendering slider…');
+  const ma=$('maparea');
+  const W=ma.clientWidth, H=ma.clientHeight;
+  const cv=$('cmp-cv');
+  cv.width=W; cv.height=H;
+
+  await new Promise(r=>setTimeout(r,300));
+
+  // Capture both maps while they're in the side-by-side panel (currently hidden
+  // but we switch panel-side visible briefly for capture)
+  showPanel('panel-side');
+  [mapB,mapA].forEach(m=>m.invalidateSize());
+  await new Promise(r=>setTimeout(r,200));
+
+  capB=captureMapToCanvas(mapB,W,H);
+  capA=captureMapToCanvas(mapA,W,H);
+
+  showPanel('panel-slider');
+  drawSlider(sliderPos);
+  setStatus('Drag the divider · Run Damage Detection to analyse');
+}
+
+function captureMapToCanvas(map,W,H){
+  const c=document.createElement('canvas'); c.width=W; c.height=H;
+  const ctx=c.getContext('2d');
+  ctx.fillStyle='#0b0d0f'; ctx.fillRect(0,0,W,H);
+
+  const b=parseInt($('brightness').value)/100;
+  const co=parseInt($('contrast').value)/100;
+  const s=parseInt($('saturation').value)/100;
+  ctx.filter=`brightness(${b}) contrast(${co}) saturate(${s})`;
+
+  const cont=map.getContainer();
+  const mr=cont.getBoundingClientRect();
+  cont.querySelectorAll('.leaflet-tile-pane img.leaflet-tile').forEach(img=>{
+    if(!img.complete||!img.naturalWidth||img.style.display==='none')return;
+    try{
+      const r=img.getBoundingClientRect();
+      ctx.drawImage(img, r.left-mr.left, r.top-mr.top, r.width, r.height);
+    }catch(e){}
+  });
+  ctx.filter='none';
+  return c;
+}
+
+function drawSlider(pos){
+  const cv=$('cmp-cv'); if(!cv||!capB||!capA)return;
+  const ctx=cv.getContext('2d');
+  const W=cv.width, H=cv.height, sx=W*pos;
+  ctx.clearRect(0,0,W,H);
+  ctx.save(); ctx.beginPath(); ctx.rect(0,0,sx,H); ctx.clip();
+  ctx.drawImage(capB,0,0); ctx.restore();
+  ctx.save(); ctx.beginPath(); ctx.rect(sx,0,W-sx,H); ctx.clip();
+  ctx.drawImage(capA,0,0);
+  if(detectionDone&&capOv){
+    ctx.globalAlpha=parseFloat($('opa').value)/100;
+    ctx.drawImage(capOv,0,0);
+    ctx.globalAlpha=1;
+  }
+  ctx.restore();
+  $('sbar').style.left=sx+'px';
+  $('sknob').style.left=sx+'px';
+}
+
+// Slider events
+$('sknob').addEventListener('mousedown',e=>{sliderDrag=true;e.preventDefault();});
+document.addEventListener('mousemove',e=>{
+  if(!sliderDrag)return;
+  const r=$('panel-slider').getBoundingClientRect();
+  sliderPos=Math.max(.02,Math.min(.98,(e.clientX-r.left)/r.width));
+  drawSlider(sliderPos);
+});
+document.addEventListener('mouseup',()=>sliderDrag=false);
+$('sknob').addEventListener('touchstart',e=>{sliderDrag=true;e.preventDefault();},{passive:false});
+document.addEventListener('touchmove',e=>{
+  if(!sliderDrag)return;
+  const r=$('panel-slider').getBoundingClientRect();
+  sliderPos=Math.max(.02,Math.min(.98,(e.touches[0].clientX-r.left)/r.width));
+  drawSlider(sliderPos);
+},{passive:false});
+document.addEventListener('touchend',()=>sliderDrag=false);
+
+// ── Damage detection ──────────────────────────────────────────────────────────
+async function runDetection(){
+  if(!mapB||!mapA)return;
+  $('det-btn').disabled=true;
+  setStatus('Capturing tiles…'); setProg(20);
+
+  // Capture from side-by-side (most reliable)
+  showPanel('panel-side');
+  [mapB,mapA].forEach(m=>m.invalidateSize());
+  await new Promise(r=>setTimeout(r,300));
+
+  const ma=$('maparea');
+  const W=ma.clientWidth, H=ma.clientHeight;
+  capB=captureMapToCanvas(mapB,W,H);
+  capA=captureMapToCanvas(mapA,W,H);
+
+  showPanel(mode==='side'?'panel-side':mode==='overlay'?'panel-overlay':'panel-slider');
+
+  setStatus('Analysing changes…'); setProg(55);
+  await new Promise(r=>setTimeout(r,30));
+
+  const thr=parseInt($('sens').value);
+  const{ov,stats}=detect(capB,capA,thr);
+  capOv=ov; detectionDone=true;
+
+  $('sf').textContent=stats.f; $('sd').textContent=stats.d;
+  $('sc').textContent=stats.c; $('sr').textContent=stats.r;
+
+  // Overlay: clear existing layer then add fresh one
+  if(ovLayer){try{mapA.removeLayer(ovLayer);}catch(e){}} ovLayer=null;
+  ovLayer=L.imageOverlay(ov.toDataURL(), mapA.getBounds(),
+    {opacity:parseFloat($('opa').value)/100, interactive:false});
+
+  if(mode==='slider') drawSlider(sliderPos);
+
+  setProg(100);
+  const chg=parseFloat(stats.c);
+  setStatus(chg<0.5
+    ? `Low change: ${stats.c} — try wider date gap or zoom into impact site`
+    : `Done — ${stats.r} zones flagged · ${stats.c} change`);
+  $('det-btn').disabled=false;
+}
+
+function detect(cB,cA,thr){
+  const W=Math.min(cB.width,cA.width), H=Math.min(cB.height,cA.height);
+  const dB=cB.getContext('2d').getImageData(0,0,W,H).data;
+  const dA=cA.getContext('2d').getImageData(0,0,W,H).data;
+  const rc=document.createElement('canvas'); rc.width=W; rc.height=H;
+  const rctx=rc.getContext('2d');
+  const out=rctx.createImageData(W,H); const od=out.data;
+  let fp=0,dp=0,cp=0;
+  for(let i=0;i<W*H;i++){
+    const p=i*4;
+    const rB=dB[p],gB=dB[p+1],bB=dB[p+2],rA=dA[p],gA=dA[p+1],bA=dA[p+2];
+    const fi=((rA-rB)+(gB-gA))/2;
+    const di=((rB+gB+bB)-(rA+gA+bA))/3;
+    const mg=(Math.abs(rA-rB)+Math.abs(gA-gB)+Math.abs(bA-bB))/3;
+    od[p+3]=0;
+    if(fi>thr&&mg>thr*.5){od[p]=239;od[p+1]=68; od[p+2]=68; od[p+3]=210;fp++;}
+    else if(di>thr&&mg>thr*.5){od[p]=59; od[p+1]=130;od[p+2]=246;od[p+3]=210;dp++;}
+    else if(mg>thr){od[p]=245;od[p+1]=158;od[p+2]=11; od[p+3]=175;cp++;}
+  }
+  rctx.putImageData(out,0,0);
+  const sc=3,mW=Math.floor(W/sc),mH=Math.floor(H/sc);
+  const mask=new Uint8Array(mW*mH);
+  for(let y=0;y<mH;y++)for(let x=0;x<mW;x++){
+    let h=0;
+    for(let dy=0;dy<sc;dy++)for(let dx=0;dx<sc;dx++){
+      const pi=((y*sc+dy)*W+(x*sc+dx))*4;
+      if(od[pi+3]>100)h++;
+    }
+    mask[y*mW+x]=h>4?1:0;
+  }
+  const vis=new Uint8Array(mW*mH),boxes=[];
+  for(let y=0;y<mH;y++)for(let x=0;x<mW;x++){
+    const idx=y*mW+x; if(!mask[idx]||vis[idx])continue;
+    const q=[{x,y}]; vis[idx]=1;
+    let x0=x,x1=x,y0=y,y1=y,cnt=0;
+    while(q.length){
+      const{x:cx,y:cy}=q.shift(); cnt++;
+      x0=Math.min(x0,cx);x1=Math.max(x1,cx);y0=Math.min(y0,cy);y1=Math.max(y1,cy);
+      for(const[nx,ny]of[[cx-1,cy],[cx+1,cy],[cx,cy-1],[cx,cy+1]]){
+        if(nx<0||ny<0||nx>=mW||ny>=mH)continue;
+        const ni=ny*mW+nx; if(!mask[ni]||vis[ni])continue;
+        vis[ni]=1; q.push({x:nx,y:ny});
+      }
+    }
+    if(cnt>10)boxes.push({x:x0*sc,y:y0*sc,w:(x1-x0+1)*sc,h:(y1-y0+1)*sc,area:cnt*sc*sc});
+  }
+  boxes.sort((a,b)=>b.area-a.area);
+  const topN=boxes.slice(0,40);
+  const COLS=['#22c55e','#ef4444','#f59e0b','#a78bfa','#3b82f6'];
+  rctx.font='bold 11px system-ui';
+  topN.forEach((b,i)=>{
+    const col=COLS[i%COLS.length];
+    rctx.strokeStyle=col; rctx.lineWidth=2.5; rctx.fillStyle=col+'28';
+    rctx.beginPath(); rctx.roundRect(b.x,b.y,b.w,b.h,4); rctx.fill(); rctx.stroke();
+    const lbl='#'+(i+1), tw=rctx.measureText(lbl).width;
+    rctx.fillStyle=col; rctx.beginPath(); rctx.roundRect(b.x,b.y-18,tw+10,17,3); rctx.fill();
+    rctx.fillStyle='#000'; rctx.fillText(lbl,b.x+5,b.y-5);
+  });
+  const tot=W*H;
+  return{ov:rc,stats:{
+    f:(fp/tot*100).toFixed(2)+'%', d:(dp/tot*100).toFixed(2)+'%',
+    c:((fp+dp+cp)/tot*100).toFixed(2)+'%', r:topN.length
+  }};
+}
+
+// ── Opacity ───────────────────────────────────────────────────────────────────
+function setOpa(v){
+  $('opa-v').textContent=v+'%';
+  if(ovLayer)ovLayer.setOpacity(v/100);
+  if(detectionDone&&capOv&&mode==='slider')drawSlider(sliderPos);
+}
+
+// ── Export ────────────────────────────────────────────────────────────────────
+async function exportImg(){
+  if(!mapB||!mapA)return;
+  setStatus('Capturing for export…');
+  showPanel('panel-side');
+  [mapB,mapA].forEach(m=>m.invalidateSize());
+  await new Promise(r=>setTimeout(r,300));
+  const ma=$('maparea');
+  const W=ma.clientWidth, H=ma.clientHeight;
+  const fB=captureMapToCanvas(mapB,W,H);
+  const fA=captureMapToCanvas(mapA,W,H);
+  showPanel('panel-'+mode);
+  const exp=document.createElement('canvas');
+  exp.width=W*2+16; exp.height=H+56;
+  const ctx=exp.getContext('2d');
+  ctx.fillStyle='#0b0d0f'; ctx.fillRect(0,0,exp.width,exp.height);
+  ctx.drawImage(fB,0,32,W,H);
+  ctx.drawImage(fA,W+16,32,W,H);
+  if(detectionDone&&capOv)ctx.drawImage(capOv,W+16,32,W,H);
+  ctx.fillStyle='#fff'; ctx.font='bold 13px system-ui'; ctx.textAlign='center';
+  ctx.fillText($('cmp-lbl-b').textContent, W/2, 20);
+  ctx.fillText($('cmp-lbl-a').textContent, W+16+W/2, 20);
+  ctx.fillStyle='#6b7280'; ctx.font='11px system-ui'; ctx.textAlign='left';
+  ctx.fillText('ESRI Wayback · Satellite Damage Viewer', 8, H+46);
+  const a=document.createElement('a');
+  a.download='damage_'+Date.now()+'.png'; a.href=exp.toDataURL('image/png'); a.click();
+  setStatus('Exported');
+}
+
+// ── Resize ────────────────────────────────────────────────────────────────────
+window.addEventListener('resize',()=>{
+  if(mapB)mapB.invalidateSize();
+  if(mapA)mapA.invalidateSize();
+  if(mode==='slider'&&capB&&capA){
+    const ma=$('maparea');
+    const cv=$('cmp-cv');
+    cv.width=ma.clientWidth; cv.height=ma.clientHeight;
+    drawSlider(sliderPos);
+  }
+});
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+loadCat();
+</script>
+</body>
+</html>
